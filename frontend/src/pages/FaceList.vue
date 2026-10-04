@@ -5,9 +5,12 @@ import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import { useFaceFilter } from '../hooks/useFaceFilter';
 import FaceCard from '../components/common/FaceCard.vue';
 import GradeTag from '../components/common/GradeTag.vue';
+import ChainConflictDialog from '../components/common/ChainConflictDialog.vue';
+import ChainDraftCenter from '../components/common/ChainDraftCenter.vue';
 import {
   EXCAVATION_METHODS,
   LITHOLOGIES,
@@ -17,16 +20,29 @@ import {
   type Weathering,
 } from '../types/face';
 import { ROCK_GRADES, type RockGrade } from '../types/grade';
+import type { ChainConflict } from '../types/chain';
 import { formatChainage } from '../utils/geoMath';
 
 const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const chainStore = useChainStore();
 const { filters, result, options, gradeDistribution, reset } = useFaceFilter();
 
 const dialogVisible = ref(false);
 const error = ref('');
+
+/** 冲突对话与草稿箱 */
+const conflictVisible = ref(false);
+const draftCenterVisible = ref(false);
+const conflicts = ref<ChainConflict[]>([]);
+const conflictSummary = ref('');
+const lastDraftId = ref('');
+const pendingCount = ref(0);
+const draftCount = ref(0);
+/** 打开新建表单时的里程链版本（提交比对基线） */
+const formBaseVersion = ref(0);
 
 const form = reactive<TunnelFaceDraft>({
   faceNo: '',
@@ -46,6 +62,7 @@ const maxGradeCount = computed(() => Math.max(1, ...gradeDistribution.value.map(
 function openDialog() {
   dialogVisible.value = true;
   error.value = '';
+  formBaseVersion.value = chainStore.version;
 }
 
 /** 复制上一循环（里程更小的最近一个掌子面）的信息 */
@@ -88,16 +105,64 @@ async function submit() {
     error.value = '饱和抗压强度需在 0 ~ 300 MPa 之间';
     return;
   }
-  const created = await faceStore.add({ ...form, faceNo: form.faceNo.trim() });
-  dialogVisible.value = false;
-  ElMessage.success(`已建立掌子面「${created.faceNo}」`);
-  form.faceNo = '';
+  const payload = { ...form, faceNo: form.faceNo.trim() };
+  const res = await chainStore.submitFace(payload, formBaseVersion.value);
+  if (res.ok) {
+    await faceStore.load();
+    dialogVisible.value = false;
+    ElMessage.success(`已建立掌子面「${payload.faceNo}」，里程链 v${res.version}`);
+    form.faceNo = '';
+    await refreshCounts();
+  } else {
+    conflicts.value = res.conflicts;
+    conflictSummary.value = `掌子面 ${payload.faceNo} 区间 ${formatChainage(payload.mileageRange[0])} ~ ${formatChainage(payload.mileageRange[1])}`;
+    lastDraftId.value = res.draftId ?? '';
+    conflictVisible.value = true;
+    ElMessage.warning('检测到冲突，提交已保留为草稿');
+    await refreshCounts();
+  }
+}
+
+/** 冲突对话中确认：强制入链并重算相邻区间 */
+async function resolveConflict() {
+  if (!lastDraftId.value) return;
+  const res = await chainStore.resolveDraft(lastDraftId.value);
+  if (res.ok) {
+    ElMessage.success(`已确认入链，相邻区间已重算（链 v${chainStore.version}）`);
+    conflictVisible.value = false;
+    dialogVisible.value = false;
+    form.faceNo = '';
+    await faceStore.load();
+    await refreshCounts();
+  }
+}
+
+async function discardConflict() {
+  if (lastDraftId.value) await chainStore.discardDraft(lastDraftId.value);
+  conflictVisible.value = false;
+  ElMessage.info('已放弃该草稿');
+  await refreshCounts();
+}
+
+async function refreshCounts() {
+  const [faces, drafts] = await Promise.all([chainStore.fetchPendingFaces(), chainStore.fetchActiveDrafts()]);
+  pendingCount.value = faces.length;
+  draftCount.value = drafts.length;
+}
+
+/** 草稿箱中确认/放弃后，台账与计数同步刷新 */
+async function onDraftCenterChanged() {
+  await faceStore.load();
+  await gradeStore.load();
+  await refreshCounts();
 }
 
 onMounted(async () => {
   await faceStore.load();
   await gradeStore.load();
   await jointStore.load();
+  await chainStore.load();
+  await refreshCounts();
 });
 </script>
 
@@ -107,7 +172,11 @@ onMounted(async () => {
       <h2>掌子面台账</h2>
       <el-tag>共 {{ faceStore.items.length }} 个掌子面</el-tag>
       <el-tag type="info" effect="plain">筛选命中 {{ result.length }} 个</el-tag>
+      <el-tag type="warning" effect="plain">里程链 v{{ chainStore.version }}</el-tag>
       <div class="spacer" />
+      <el-badge :value="pendingCount + draftCount" :hidden="pendingCount + draftCount === 0" type="danger">
+        <el-button @click="draftCenterVisible = true">待整理 / 草稿箱</el-button>
+      </el-badge>
       <el-button type="primary" @click="openDialog">新建编录</el-button>
     </div>
 
@@ -232,6 +301,15 @@ onMounted(async () => {
         <el-button type="primary" @click="submit">保存编录</el-button>
       </template>
     </el-dialog>
+
+    <ChainConflictDialog
+      v-model="conflictVisible"
+      :conflicts="conflicts"
+      :summary="conflictSummary"
+      @resolve="resolveConflict"
+      @discard="discardConflict"
+    />
+    <ChainDraftCenter v-model="draftCenterVisible" @changed="onDraftCenterChanged" />
   </div>
 </template>
 

@@ -33,9 +33,11 @@ export interface RockMassGrade {
   /** 是否人工修正级别 */
   manualAdjusted: boolean;
   judgedAt: number;
+  /** 级别结论所依据的里程链版本（人工确认结论长期保留，仅提示是否落后于链） */
+  chainVersion: number;
 }
 
-export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt'>;
+export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt' | 'chainVersion'>;
 
 /** 级别色带（用于 <GradeTag>） */
 export const GRADE_COLOR: Record<RockGrade, string> = {

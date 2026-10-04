@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import SketchCanvas from '../components/common/SketchCanvas.vue';
 import GradeTag from '../components/common/GradeTag.vue';
@@ -15,6 +16,7 @@ const router = useRouter();
 const faceStore = useFaceStore();
 const jointStore = useJointStore();
 const gradeStore = useGradeStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
@@ -60,6 +62,8 @@ onMounted(async () => {
       <GradeTag v-if="latest" :grade="latest.grade" />
       <el-tag v-else type="info">未判定级别</el-tag>
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组</el-tag>
+      <el-tag type="warning" effect="plain">里程链 v{{ chainStore.version }}</el-tag>
+      <el-tag v-if="face?.status === 'pending'" type="danger">区间待整理</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
       <el-button @click="router.push(`/faces/${faceId}/water`)">涌水记录</el-button>
@@ -68,6 +72,15 @@ onMounted(async () => {
     </div>
 
     <el-alert v-if="!face" type="warning" :closable="false" show-icon title="未找到该掌子面（可能已被删除）" />
+    <el-alert
+      v-if="face?.status === 'pending'"
+      type="error"
+      :closable="false"
+      show-icon
+      title="该掌子面编录里程区间与相邻区间重叠，处于待整理状态"
+      description="区间重叠期间提交的节理、涌水将保留为草稿；可在台账页「待整理 / 草稿箱」中以本区间为锚点重算相邻区间，保持里程连续。"
+      style="margin-bottom: 12px"
+    />
 
     <div v-if="face" class="grid">
       <div class="left">
@@ -90,6 +103,11 @@ onMounted(async () => {
             <el-descriptions-item label="编录时间">
               {{ new Date(face.recordedAt).toLocaleString('zh-CN') }}
             </el-descriptions-item>
+            <el-descriptions-item label="区间版本">
+              链 v{{ face.chainVersion }}
+              <el-tag v-if="face.status === 'pending'" type="danger" size="small">待整理</el-tag>
+              <el-tag v-else type="success" size="small">已确认</el-tag>
+            </el-descriptions-item>
           </el-descriptions>
         </el-card>
 
@@ -100,6 +118,11 @@ onMounted(async () => {
             <span class="muted">[BQ] = {{ latest.correctedBq }}（BQ {{ latest.bqValue }}，修正 {{ latest.correction }}）</span>
             <p class="support">{{ latest.supportSuggestion || GRADE_SUPPORT[latest.grade] }}</p>
             <p class="muted">{{ gradeCompare }}</p>
+            <p class="muted">
+              结论依据里程链 v{{ latest.chainVersion }}
+              <el-tag v-if="latest.manualAdjusted" type="success" size="small" effect="dark">人工确认结论已保留</el-tag>
+              <el-tag v-else-if="latest.chainVersion < chainStore.version" type="warning" size="small">依据旧版链，建议重新判定</el-tag>
+            </p>
           </div>
           <div v-else>
             <p class="muted">尚未判定级别，按当前参数实时试算：</p>
@@ -113,6 +136,12 @@ onMounted(async () => {
           <el-table :data="joints" size="small" border>
             <el-table-column label="组号" width="70">
               <template #default="{ row }">J{{ row.setNo }}</template>
+            </el-table-column>
+            <el-table-column label="里程" width="120">
+              <template #default="{ row }">
+                {{ formatChainage(row.chainage) }}
+                <el-tag v-if="row.chainVersion < chainStore.version" type="warning" size="small">旧桩号</el-tag>
+              </template>
             </el-table-column>
             <el-table-column label="产状" width="140">
               <template #default="{ row }">{{ attitudeText(row.dipDirection, row.dipAngle) }}</template>

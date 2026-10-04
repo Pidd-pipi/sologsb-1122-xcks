@@ -21,8 +21,13 @@ export const useJointStore = defineStore('joint', {
       this.items = rows;
       this.loaded = true;
     },
-    async add(draft: JointSetDraft) {
-      const record: JointSet = { ...toPlain(draft), id: newId('joint') };
+    async add(draft: JointSetDraft, chainVersion = 1) {
+      const record: JointSet = {
+        ...toPlain(draft),
+        id: newId('joint'),
+        chainVersion,
+        chainage: draft.offset ?? 0,
+      };
       await db.joints.put(toPlain(record));
       this.items = [...this.items, record];
       return record;

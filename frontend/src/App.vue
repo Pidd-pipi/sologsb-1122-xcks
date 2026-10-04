@@ -2,9 +2,11 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { readDbVersion } from './utils/db';
+import { useChainStore } from './stores/chainStore';
 
 const route = useRoute();
 const router = useRouter();
+const chainStore = useChainStore();
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/faces')) {
@@ -39,6 +41,7 @@ function onSelect(index: string) {
         <el-menu-item index="/grade">围岩级别</el-menu-item>
       </el-menu>
       <el-tag size="small" effect="plain">本地结构版本 v{{ version }}</el-tag>
+      <el-tag size="small" type="warning" effect="plain">里程链 v{{ chainStore.version }}</el-tag>
     </el-header>
     <el-main class="app-main">
       <router-view />

@@ -34,9 +34,15 @@ export interface JointSet {
   waterWet: WaterWet;
   /** 条数 */
   jointCount: number;
+  /** 所依据的里程链版本 */
+  chainVersion: number;
+  /** 距掌子面桩号的偏移 m（节理在掌子面处，通常为 0） */
+  offset: number;
+  /** 入链时的绝对里程 m（= 掌子面桩号 + offset），随链重算 */
+  chainage: number;
 }
 
-export type JointSetDraft = Omit<JointSet, 'id'>;
+export type JointSetDraft = Omit<JointSet, 'id' | 'chainVersion' | 'chainage'>;
 
 /** 倾角是否异常（超出 0~90°） */
 export function isDipAbnormal(dipAngle: number): boolean {

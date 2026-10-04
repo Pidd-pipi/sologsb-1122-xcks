@@ -4,8 +4,10 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import JointPolarPlot from '../components/common/JointPolarPlot.vue';
 import SketchCanvas from '../components/common/SketchCanvas.vue';
+import ChainConflictDialog from '../components/common/ChainConflictDialog.vue';
 import {
   FILL_MATERIALS,
   ROUGHNESSES,
@@ -16,13 +18,15 @@ import {
   type Roughness,
   type WaterWet,
 } from '../types/joint';
-import { attitudeText, clusterJoints } from '../utils/geoMath';
+import type { ChainConflict } from '../types/chain';
+import { attitudeText, clusterJoints, formatChainage } from '../utils/geoMath';
 import { nextSetNo } from '../utils/id';
 
 const route = useRoute();
 const router = useRouter();
 const faceStore = useFaceStore();
 const jointStore = useJointStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
@@ -31,6 +35,13 @@ const clusters = computed(() => clusterJoints(joints.value));
 
 const error = ref('');
 const mergeTarget = ref('');
+
+/** 冲突对话 */
+const conflictVisible = ref(false);
+const conflicts = ref<ChainConflict[]>([]);
+const lastDraftId = ref('');
+/** 进入页面时的里程链版本（提交比对基线） */
+const formBaseVersion = ref(0);
 
 const form = reactive<JointSetDraft>({
   faceId: '',
@@ -44,6 +55,7 @@ const form = reactive<JointSetDraft>({
   roughness: '粗糙',
   waterWet: '潮湿',
   jointCount: 5,
+  offset: 0,
 });
 
 watch(
@@ -51,6 +63,7 @@ watch(
   (id) => {
     form.faceId = id;
     form.setNo = nextSetNo(jointStore.byFace(id).map((j) => j.setNo));
+    formBaseVersion.value = chainStore.version;
     if (face.value) {
       form.dipDirection = face.value.attitude.dipDirection;
       form.dipAngle = face.value.attitude.dipAngle;
@@ -81,10 +94,34 @@ async function submit() {
     error.value = `组号 J${form.setNo} 已存在，请改用 J${nextSetNo(joints.value.map((j) => j.setNo))}`;
     return;
   }
-  const created = await jointStore.add({ ...form });
-  ElMessage.success(`已录入 J${created.setNo}：${attitudeText(created.dipDirection, created.dipAngle)}`);
-  form.setNo = nextSetNo(joints.value.map((j) => j.setNo));
-  form.jointCount = 5;
+  const res = await chainStore.submitJoint({ ...form }, formBaseVersion.value);
+  if (res.ok) {
+    await jointStore.load();
+    ElMessage.success(`已录入 J${form.setNo}，节理位置随里程链确认（链 v${res.version}）`);
+    form.setNo = nextSetNo(joints.value.map((j) => j.setNo));
+    form.jointCount = 5;
+  } else {
+    conflicts.value = res.conflicts;
+    lastDraftId.value = res.draftId ?? '';
+    conflictVisible.value = true;
+    ElMessage.warning('检测到冲突，节理组已保留为草稿');
+  }
+}
+
+async function resolveConflict() {
+  if (!lastDraftId.value) return;
+  const res = await chainStore.resolveDraft(lastDraftId.value);
+  if (res.ok) {
+    ElMessage.success(`已确认入链（链 v${chainStore.version}），节理位置按掌子面桩号重算`);
+    conflictVisible.value = false;
+    await jointStore.load();
+  }
+}
+
+async function discardConflict() {
+  if (lastDraftId.value) await chainStore.discardDraft(lastDraftId.value);
+  conflictVisible.value = false;
+  ElMessage.info('已放弃该草稿');
 }
 
 async function mergeCluster(clusterNo: number) {
@@ -111,6 +148,8 @@ onMounted(async () => {
     <div class="header">
       <h2>节理产状录入 · {{ face?.faceNo ?? '未知' }}</h2>
       <el-tag type="info" effect="plain">已录 {{ joints.length }} 组</el-tag>
+      <el-tag type="warning" effect="plain">里程链 v{{ chainStore.version }}</el-tag>
+      <el-tag v-if="face?.status === 'pending'" type="danger">掌子面区间待整理，提交将保留草稿</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/grade/${faceId}`)">围岩级别判定</el-button>
@@ -206,6 +245,12 @@ onMounted(async () => {
             <el-table-column label="组号" width="70">
               <template #default="{ row }">J{{ row.setNo }}</template>
             </el-table-column>
+            <el-table-column label="里程" width="110">
+              <template #default="{ row }">
+                {{ formatChainage(row.chainage) }}
+                <el-tag v-if="row.chainVersion < chainStore.version" type="warning" size="small">旧桩号</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="产状" width="150">
               <template #default="{ row }">{{ attitudeText(row.dipDirection, row.dipAngle) }}</template>
             </el-table-column>
@@ -230,6 +275,13 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <ChainConflictDialog
+      v-model="conflictVisible"
+      :conflicts="conflicts"
+      @resolve="resolveConflict"
+      @discard="discardConflict"
+    />
   </div>
 </template>
 

@@ -4,20 +4,31 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
+import { useChainStore } from '../stores/chainStore';
+import ChainConflictDialog from '../components/common/ChainConflictDialog.vue';
 import { CHANGE_TRENDS, INFLOW_TYPES, isSurge, type ChangeTrend, type InflowType, type WaterInflow, type WaterInflowDraft } from '../types/water';
 import { waterMeasure } from '../types/grade';
+import type { ChainConflict } from '../types/chain';
 import { formatChainage, parseChainage } from '../utils/geoMath';
 
 const route = useRoute();
 const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const rows = computed(() => gradeStore.watersByFace(faceId.value));
 
 const error = ref('');
+
+/** 冲突对话 */
+const conflictVisible = ref(false);
+const conflicts = ref<ChainConflict[]>([]);
+const lastDraftId = ref('');
+/** 进入页面时的里程链版本（提交比对基线） */
+const formBaseVersion = ref(0);
 
 const form = reactive<WaterInflowDraft>({
   faceId: '',
@@ -89,14 +100,39 @@ async function submit() {
     error.value = '估算涌水量需在 0 ~ 1000 L/min 之间';
     return;
   }
-  const created = await gradeStore.addWater({ ...form, position: form.position.trim() });
-  ElMessage.success(`已记录 ${created.position}：${created.type} ${created.estimatedFlow} L/min`);
-  form.position = '';
+  const res = await chainStore.submitWater({ ...form, position: form.position.trim() }, formBaseVersion.value);
+  if (res.ok) {
+    await gradeStore.load();
+    ElMessage.success(`已记录 ${form.position}，涌水位置随里程链确认（链 v${res.version}）`);
+    form.position = '';
+  } else {
+    conflicts.value = res.conflicts;
+    lastDraftId.value = res.draftId ?? '';
+    conflictVisible.value = true;
+    ElMessage.warning('检测到冲突，涌水记录已保留为草稿');
+  }
+}
+
+async function resolveConflict() {
+  if (!lastDraftId.value) return;
+  const res = await chainStore.resolveDraft(lastDraftId.value);
+  if (res.ok) {
+    ElMessage.success(`已确认入链（链 v${chainStore.version}），涌水桩号按掌子面里程重算`);
+    conflictVisible.value = false;
+    await gradeStore.load();
+  }
+}
+
+async function discardConflict() {
+  if (lastDraftId.value) await chainStore.discardDraft(lastDraftId.value);
+  conflictVisible.value = false;
+  ElMessage.info('已放弃该草稿');
 }
 
 onMounted(async () => {
   await faceStore.load();
   await gradeStore.load();
+  formBaseVersion.value = chainStore.version;
   if (face.value) {
     form.faceId = face.value.id;
     form.chainage = face.value.chainage;
@@ -110,6 +146,8 @@ onMounted(async () => {
       <h2>涌水记录与趋势 · {{ face?.faceNo ?? '未知' }}</h2>
       <el-tag type="info" effect="plain">记录 {{ rows.length }} 条</el-tag>
       <el-tag type="warning">突变点 {{ surges.length }} 处</el-tag>
+      <el-tag type="warning" effect="plain">里程链 v{{ chainStore.version }}</el-tag>
+      <el-tag v-if="face?.status === 'pending'" type="danger">掌子面区间待整理，提交将保留草稿</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
@@ -146,6 +184,10 @@ onMounted(async () => {
           <el-form-item label="里程位置">
             <el-input-number v-model="form.chainage" :min="0" :max="999999" :step="1" />
             <span class="hint">{{ formatChainage(form.chainage) }}</span>
+            <span v-if="face" class="hint">
+              （掌子面 {{ formatChainage(face.chainage) }} {{ form.chainage - face.chainage >= 0 ? '前' : '后' }}
+              {{ Math.abs(form.chainage - face.chainage) }} m，掌子面桩号变动后随链重算）
+            </span>
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="submit">保存记录</el-button>
@@ -209,6 +251,12 @@ onMounted(async () => {
             <el-table-column label="里程" width="110">
               <template #default="{ row }">{{ formatChainage(row.chainage) }}</template>
             </el-table-column>
+            <el-table-column label="依据链" width="110">
+              <template #default="{ row }">
+                v{{ row.chainVersion }}
+                <el-tag v-if="row.chainVersion < chainStore.version" type="warning" size="small">旧桩号</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="position" label="出水部位" min-width="140" />
             <el-table-column prop="type" label="类型" width="90" />
             <el-table-column prop="estimatedFlow" label="L/min" width="90" />
@@ -224,6 +272,13 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <ChainConflictDialog
+      v-model="conflictVisible"
+      :conflicts="conflicts"
+      @resolve="resolveConflict"
+      @discard="discardConflict"
+    />
   </div>
 </template>
 

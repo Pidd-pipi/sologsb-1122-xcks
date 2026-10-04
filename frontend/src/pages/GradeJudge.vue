@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import GradeTag from '../components/common/GradeTag.vue';
 import { GROUNDWATERS, GRADE_SUPPORT, ROCK_GRADES, type Groundwater, type RockGrade } from '../types/grade';
@@ -15,6 +16,7 @@ const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.faceId ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
@@ -65,8 +67,8 @@ async function save() {
     correctedBq: result.value.correctedBq,
     supportSuggestion: finalSupport.value,
     manualAdjusted: manual.value,
-  });
-  ElMessage.success(`已保存 ${finalGrade.value} 级围岩判定`);
+  }, chainStore.version);
+  ElMessage.success(`已保存 ${finalGrade.value} 级围岩判定（依据里程链 v${chainStore.version}）`);
 }
 
 onMounted(async () => {
@@ -88,6 +90,7 @@ onMounted(async () => {
       <h2>围岩级别判定 · {{ face?.faceNo ?? '未知' }}</h2>
       <GradeTag :grade="finalGrade" />
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组 · 自动 Jv {{ estimateJv(joints) }}</el-tag>
+      <el-tag type="warning" effect="plain">里程链 v{{ chainStore.version }}</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
@@ -171,6 +174,13 @@ onMounted(async () => {
             <el-table-column prop="groundwater" label="出水" width="120" />
             <el-table-column label="修正" width="80">
               <template #default="{ row }">{{ row.manualAdjusted ? '人工' : '自动' }}</template>
+            </el-table-column>
+            <el-table-column label="依据链" min-width="150">
+              <template #default="{ row }">
+                <span>v{{ row.chainVersion }}</span>
+                <el-tag v-if="row.manualAdjusted" type="success" size="small" effect="dark">人工确认保留</el-tag>
+                <el-tag v-else-if="row.chainVersion < chainStore.version" type="warning" size="small">依据旧版链</el-tag>
+              </template>
             </el-table-column>
           </el-table>
           <el-empty v-if="history.length === 0" description="尚无历史判定" :image-size="60" />

@@ -1,3 +1,6 @@
+/** 掌子面区间状态：active 已确认入链；pending 与相邻区间重叠，待整理 */
+export type FaceStatus = 'active' | 'pending';
+
 /** 开挖方法 */
 export type ExcavationMethod = '全断面' | '台阶法' | 'CD 法';
 
@@ -39,6 +42,10 @@ export interface TunnelFace {
   attitude: Attitude;
   recordedAt: number;
   geologist: string;
+  /** 区间确认时的里程链版本（提交比对基线） */
+  chainVersion: number;
+  /** 区间状态：重叠未整理的掌子面为 pending */
+  status: FaceStatus;
 }
 
-export type TunnelFaceDraft = Omit<TunnelFace, 'id' | 'recordedAt'>;
+export type TunnelFaceDraft = Omit<TunnelFace, 'id' | 'recordedAt' | 'chainVersion' | 'status'>;
