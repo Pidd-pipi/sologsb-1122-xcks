@@ -1,3 +1,5 @@
+import type { RangeVersion } from './chain';
+
 /** 围岩级别 Ⅰ ~ Ⅵ */
 export type RockGrade = 'Ⅰ' | 'Ⅱ' | 'Ⅲ' | 'Ⅳ' | 'Ⅴ' | 'Ⅵ';
 
@@ -33,9 +35,11 @@ export interface RockMassGrade {
   /** 是否人工修正级别 */
   manualAdjusted: boolean;
   judgedAt: number;
+  /** 版本戳：判定所依据的里程链版本与区间；里程重算不会覆盖已保存的级别结论 */
+  version?: RangeVersion;
 }
 
-export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt'>;
+export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt' | 'version'>;
 
 /** 级别色带（用于 <GradeTag>） */
 export const GRADE_COLOR: Record<RockGrade, string> = {

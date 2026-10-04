@@ -27,6 +27,7 @@ docker compose down
 | 状态管理 | Pinia |
 | 路由 | Vue Router 4（history 模式） |
 | 本地存储 | IndexedDB（Dexie 4）+ localStorage（素描线段），含结构版本号与升级迁移 |
+| 并发模型 | 版本化里程链（乐观并发 + 区间重叠检测 + 冲突草稿 + 确认后联动重算） |
 
 ## 本地开发
 
@@ -58,12 +59,12 @@ sologsb-1122/
         ├── main.ts
         ├── App.vue
         ├── router/index.ts
-        ├── types/{face,joint,grade,water}.ts
-        ├── stores/{face,joint,grade}Store.ts
-        ├── components/common/{SketchCanvas,JointPolarPlot,GradeTag,FaceCard}.vue
-        ├── hooks/{useFaceFilter,useGradeCalc}.ts
+        ├── types/{face,joint,grade,water,chain}.ts
+        ├── stores/{face,joint,grade,chainStore}.ts
+        ├── components/common/{SketchCanvas,JointPolarPlot,GradeTag,FaceCard,CommitConfirmDialog,ConflictPanel}.vue
+        ├── hooks/{useFaceFilter,useGradeCalc,useFaceSubmit}.ts
         ├── pages/{FaceList,FaceDetail,JointEntry,WaterView,GradeJudge}.vue
-        └── utils/{db,geoMath,id}.ts
+        └── utils/{db,geoMath,chain,id}.ts
 ```
 
 ## 页面与路由
@@ -80,12 +81,18 @@ sologsb-1122/
 
 ## 数据存储说明
 
-- 数据库名 `gbtunnelface`，当前结构版本 **v2**（`localStorage['gbtunnelface:db-version']` 记录）。
-- 四张表：`faces`（掌子面）、`joints`（节理组）、`grades`（围岩级别判定）、`waters`（涌水记录）。
+- 数据库名 `gbtunnelface`，当前结构版本 **v3**（`localStorage['gbtunnelface:db-version']` 记录）。
+- 六张表：`faces`（掌子面）、`joints`（节理组）、`grades`（围岩级别判定）、`waters`（涌水记录）、`meta`（里程链全局版本）、`drafts`（提交冲突保留的草稿）。
+- **版本化里程链**：`meta.chainRevision` 每次成功提交递增；掌子面 / 节理 / 涌水 / 级别均带版本戳（所依据的链版本、自身记录版本、依据区间）。
+  - 提交（新建 / 修改里程 / 待整理激活）先在事务内与前后区间比较：区间重叠、编号重复或编辑期间链版本已被他人推进（stale）时**不覆盖任何数据**，把内容连同冲突清单存入 `drafts`，在台账顶部列出，可调整后重提、「仍按此里程」或丢弃。
+  - 无冲突时弹出**重算确认**：相邻区间边界对齐、目标掌子面节理/涌水按区间比例 remap（越界钳制并提示）、全部涌水点沿新链重算推导趋势；确认弹窗逐项列出变化后才提交。确认提交时会在事务内再次复检，防止两个页面同时确认。
+  - 人工确认的围岩级别结论**永不被里程重算覆盖**，详情页 / 判定页显示结论所依据的链版本与区间；引用旧链版本的节理、涌水用红色「旧桩号 / vN」标记。
+  - 涌水同时保留人工填写趋势 `changeTrend` 与链上推导趋势 `derivedTrend`，趋势折线、突变点检测使用推导值，二者在清单中并排显示。
+- v2 → v3 迁移：为掌子面 / 节理 / 涌水 / 级别补齐版本戳，为老节理补 `chainage`、为涌水补 `derivedTrend`（沿里程重算）；区间互相重叠的旧掌子面**标记为 pending 进入「里程待整理」**而不是丢弃，调整区间后可激活入链。
 - v1 → v2 迁移：为老掌子面补 `attitude`、`mileageRange`，为级别记录补 `correctedBq`、`manualAdjusted`，为涌水补 `chainage`，并新增索引。
 - 岩性素描的结构面线段单独存 `localStorage['gbtunnelface:sketch:<faceId>']`，刷新后仍在。
 - 容器无状态、不挂载命名卷；清空站点数据即回到初始示范数据。
-- 首次打开灌入 2 个示范掌子面、4 组节理、1 条级别判定与 3 条涌水记录。
+- 首次打开灌入 3 个掌子面（其中 ZK-101 为区间重叠的「待整理」示例）、5 组节理、2 条级别判定（含 1 条人工确认）、3 条涌水记录与 1 条冲突草稿。
 
 ## 功能要点
 

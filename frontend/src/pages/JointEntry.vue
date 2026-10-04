@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import JointPolarPlot from '../components/common/JointPolarPlot.vue';
 import SketchCanvas from '../components/common/SketchCanvas.vue';
 import {
@@ -16,13 +17,15 @@ import {
   type Roughness,
   type WaterWet,
 } from '../types/joint';
-import { attitudeText, clusterJoints } from '../utils/geoMath';
+import { attitudeText, clusterJoints, formatChainage } from '../utils/geoMath';
+import { isVersionStale } from '../utils/chain';
 import { nextSetNo } from '../utils/id';
 
 const route = useRoute();
 const router = useRouter();
 const faceStore = useFaceStore();
 const jointStore = useJointStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
@@ -44,6 +47,7 @@ const form = reactive<JointSetDraft>({
   roughness: '粗糙',
   waterWet: '潮湿',
   jointCount: 5,
+  chainage: 0,
 });
 
 watch(
@@ -54,6 +58,7 @@ watch(
     if (face.value) {
       form.dipDirection = face.value.attitude.dipDirection;
       form.dipAngle = face.value.attitude.dipAngle;
+      form.chainage = face.value.chainage;
     }
   },
   { immediate: true },
@@ -81,10 +86,20 @@ async function submit() {
     error.value = `组号 J${form.setNo} 已存在，请改用 J${nextSetNo(joints.value.map((j) => j.setNo))}`;
     return;
   }
+  if (
+    face.value &&
+    (form.chainage < face.value.mileageRange[0] || form.chainage > face.value.mileageRange[1])
+  ) {
+    error.value = `节理里程需位于本掌子面编录区间 ${formatChainage(face.value.mileageRange[0])} ~ ${formatChainage(face.value.mileageRange[1])} 内`;
+    return;
+  }
   const created = await jointStore.add({ ...form });
-  ElMessage.success(`已录入 J${created.setNo}：${attitudeText(created.dipDirection, created.dipAngle)}`);
+  ElMessage.success(
+    `已录入 J${created.setNo}：${attitudeText(created.dipDirection, created.dipAngle)}（${formatChainage(created.chainage)} · 链 v${created.version.chainRevision}）`,
+  );
   form.setNo = nextSetNo(joints.value.map((j) => j.setNo));
   form.jointCount = 5;
+  if (face.value) form.chainage = face.value.chainage;
 }
 
 async function mergeCluster(clusterNo: number) {
@@ -101,6 +116,7 @@ async function mergeCluster(clusterNo: number) {
 }
 
 onMounted(async () => {
+  await chainStore.load();
   await faceStore.load();
   await jointStore.load();
 });
@@ -111,6 +127,7 @@ onMounted(async () => {
     <div class="header">
       <h2>节理产状录入 · {{ face?.faceNo ?? '未知' }}</h2>
       <el-tag type="info" effect="plain">已录 {{ joints.length }} 组</el-tag>
+      <el-tag type="info" effect="plain">里程链 v{{ chainStore.revision }}</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/grade/${faceId}`)">围岩级别判定</el-button>
@@ -124,6 +141,10 @@ onMounted(async () => {
           <el-form-item label="组号">
             <el-input-number v-model="form.setNo" :min="1" :max="99" />
             <span class="hint">建议 J{{ nextSetNo(joints.map((j) => j.setNo)) }}</span>
+          </el-form-item>
+          <el-form-item label="沿里程位置 m">
+            <el-input-number v-model="form.chainage" :min="0" :max="999999" :step="0.5" :precision="1" />
+            <span class="hint">{{ formatChainage(form.chainage) }}（掌子面里程变动时随区间重算）</span>
           </el-form-item>
           <el-form-item label="倾向 °">
             <el-input-number v-model="form.dipDirection" :min="0" :max="360" />
@@ -206,16 +227,29 @@ onMounted(async () => {
             <el-table-column label="组号" width="70">
               <template #default="{ row }">J{{ row.setNo }}</template>
             </el-table-column>
-            <el-table-column label="产状" width="150">
+            <el-table-column label="产状" width="140">
               <template #default="{ row }">{{ attitudeText(row.dipDirection, row.dipAngle) }}</template>
             </el-table-column>
-            <el-table-column prop="spacing" label="间距 cm" width="90" />
-            <el-table-column prop="persistence" label="延伸 m" width="90" />
-            <el-table-column prop="aperture" label="张开 mm" width="90" />
-            <el-table-column prop="fillMaterial" label="充填" width="90" />
-            <el-table-column prop="roughness" label="粗糙度" width="110" />
-            <el-table-column prop="waterWet" label="渗水" width="90" />
-            <el-table-column prop="jointCount" label="条数" width="80" />
+            <el-table-column label="里程" min-width="150">
+              <template #default="{ row }">
+                {{ formatChainage(row.chainage) }}
+                <el-tag
+                  size="small"
+                  :type="isVersionStale(row.version, chainStore.revision) ? 'danger' : 'info'"
+                  effect="plain"
+                  style="margin-left: 4px"
+                >
+                  v{{ row.version?.chainRevision ?? '?' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="spacing" label="间距 cm" width="80" />
+            <el-table-column prop="persistence" label="延伸 m" width="80" />
+            <el-table-column prop="aperture" label="张开 mm" width="80" />
+            <el-table-column prop="fillMaterial" label="充填" width="80" />
+            <el-table-column prop="roughness" label="粗糙度" width="100" />
+            <el-table-column prop="waterWet" label="渗水" width="80" />
+            <el-table-column prop="jointCount" label="条数" width="70" />
             <el-table-column label="操作" width="90">
               <template #default="{ row }">
                 <el-button size="small" danger @click="jointStore.remove(row.id)">删除</el-button>

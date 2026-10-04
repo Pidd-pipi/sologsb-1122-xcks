@@ -4,14 +4,17 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
-import { CHANGE_TRENDS, INFLOW_TYPES, isSurge, type ChangeTrend, type InflowType, type WaterInflow, type WaterInflowDraft } from '../types/water';
+import { useChainStore } from '../stores/chainStore';
+import { CHANGE_TRENDS, INFLOW_TYPES, effectiveTrend, isSurge, type ChangeTrend, type InflowType, type WaterInflowDraft } from '../types/water';
 import { waterMeasure } from '../types/grade';
 import { formatChainage, parseChainage } from '../utils/geoMath';
+import { isVersionStale } from '../utils/chain';
 
 const route = useRoute();
 const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
@@ -95,6 +98,7 @@ async function submit() {
 }
 
 onMounted(async () => {
+  await chainStore.load();
   await faceStore.load();
   await gradeStore.load();
   if (face.value) {
@@ -110,6 +114,7 @@ onMounted(async () => {
       <h2>涌水记录与趋势 · {{ face?.faceNo ?? '未知' }}</h2>
       <el-tag type="info" effect="plain">记录 {{ rows.length }} 条</el-tag>
       <el-tag type="warning">突变点 {{ surges.length }} 处</el-tag>
+      <el-tag type="info" effect="plain">里程链 v{{ chainStore.revision }}</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
@@ -214,7 +219,29 @@ onMounted(async () => {
             <el-table-column prop="estimatedFlow" label="L/min" width="90" />
             <el-table-column prop="waterTemp" label="水温" width="80" />
             <el-table-column prop="waterPressure" label="水压" width="80" />
-            <el-table-column prop="changeTrend" label="趋势" width="90" />
+            <el-table-column label="人工趋势" width="90">
+              <template #default="{ row }">{{ row.changeTrend }}</template>
+            </el-table-column>
+            <el-table-column label="链上趋势" min-width="110">
+              <template #default="{ row }">
+                <el-tag
+                  size="small"
+                  :type="effectiveTrend(row) === '突增' ? 'danger' : effectiveTrend(row) === '增大' ? 'warning' : 'success'"
+                  effect="plain"
+                >
+                  {{ row.derivedTrend ?? row.changeTrend }}
+                </el-tag>
+                <el-tag
+                  v-if="isVersionStale(row.version, chainStore.revision)"
+                  size="small"
+                  type="danger"
+                  effect="plain"
+                  style="margin-left: 4px"
+                >
+                  旧桩号 v{{ row.version?.chainRevision ?? '?' }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="90">
               <template #default="{ row }">
                 <el-button size="small" danger @click="gradeStore.removeWater(row.id)">删除</el-button>

@@ -1,54 +1,67 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
+import { Loading } from '@element-plus/icons-vue';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import { useFaceFilter } from '../hooks/useFaceFilter';
+import { useFaceSubmit } from '../hooks/useFaceSubmit';
 import FaceCard from '../components/common/FaceCard.vue';
 import GradeTag from '../components/common/GradeTag.vue';
+import ConflictPanel from '../components/common/ConflictPanel.vue';
+import CommitConfirmDialog from '../components/common/CommitConfirmDialog.vue';
 import {
   EXCAVATION_METHODS,
   LITHOLOGIES,
   WEATHERINGS,
-  type ExcavationMethod,
   type TunnelFaceDraft,
-  type Weathering,
 } from '../types/face';
-import { ROCK_GRADES, type RockGrade } from '../types/grade';
+import type { FaceDraftRecord } from '../types/chain';
+import { ROCK_GRADES } from '../types/grade';
 import { formatChainage } from '../utils/geoMath';
 
 const router = useRouter();
+const route = useRoute();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const chainStore = useChainStore();
 const { filters, result, options, gradeDistribution, reset } = useFaceFilter();
+const { plan, submitting, currentRevision, stage, confirm, cancelConfirm } = useFaceSubmit();
 
 const dialogVisible = ref(false);
 const error = ref('');
+/** 成功提交后要删除的旧草稿 id（草稿"调整后重提"场景） */
+const resumeDraftId = ref<string | null>(null);
 
-const form = reactive<TunnelFaceDraft>({
+const form = reactive({
   faceNo: '',
   chainage: 12486,
-  mileageRange: [12486, 12489],
-  excavationMethod: '台阶法',
+  mileageRange: [12486, 12489] as [number, number],
+  operator: '',
+  excavationMethod: '台阶法' as TunnelFaceDraft['excavationMethod'],
   faceSize: '12.6×9.8',
   lithology: '石灰岩',
-  weathering: '微风化',
+  weathering: '微风化' as TunnelFaceDraft['weathering'],
   rockStrength: 55,
   attitude: { strike: 45, dipDirection: 135, dipAngle: 30 },
   geologist: '',
 });
 
 const maxGradeCount = computed(() => Math.max(1, ...gradeDistribution.value.map((g) => g.count)));
+const pendingItems = computed(() =>
+  [...faceStore.pendingItems].sort((a, b) => a.mileageRange[0] - b.mileageRange[0]),
+);
 
 function openDialog() {
   dialogVisible.value = true;
   error.value = '';
 }
 
-/** 复制上一循环（里程更小的最近一个掌子面）的信息 */
+/** 复制上一循环（里程更小的最近一个正式掌子面）的信息 */
 function copyPrevious() {
   const latest = faceStore.latest;
   if (!latest) {
@@ -63,6 +76,7 @@ function copyPrevious() {
   form.rockStrength = draft.rockStrength;
   form.attitude = { ...draft.attitude };
   form.geologist = draft.geologist;
+  form.operator = draft.geologist;
   form.chainage = latest.chainage + 3;
   form.mileageRange = [latest.chainage + 3, latest.chainage + 6];
   form.faceNo = `${latest.faceNo}-next`;
@@ -76,10 +90,6 @@ async function submit() {
     error.value = '掌子面编号必填';
     return;
   }
-  if (faceStore.items.some((it) => it.faceNo === form.faceNo.trim())) {
-    error.value = '掌子面编号已存在，请更换';
-    return;
-  }
   if (form.mileageRange[1] < form.mileageRange[0]) {
     error.value = '编录里程区间终点不能小于起点';
     return;
@@ -88,16 +98,87 @@ async function submit() {
     error.value = '饱和抗压强度需在 0 ~ 300 MPa 之间';
     return;
   }
-  const created = await faceStore.add({ ...form, faceNo: form.faceNo.trim() });
-  dialogVisible.value = false;
-  ElMessage.success(`已建立掌子面「${created.faceNo}」`);
-  form.faceNo = '';
+  const faceNo = form.faceNo.trim();
+  const fullDraft: TunnelFaceDraft = {
+    faceNo,
+    chainage: form.chainage,
+    mileageRange: [...form.mileageRange] as [number, number],
+    excavationMethod: form.excavationMethod,
+    faceSize: form.faceSize,
+    lithology: form.lithology,
+    weathering: form.weathering,
+    rockStrength: form.rockStrength,
+    attitude: { ...form.attitude },
+    geologist: form.geologist.trim() || form.operator.trim() || '未署名',
+  };
+  const ok = await stage({
+    mode: 'create',
+    baseRevision: currentRevision.value,
+    faceNo,
+    chainage: form.chainage,
+    mileageRange: [...form.mileageRange] as [number, number],
+    updatedBy: form.operator.trim() || form.geologist.trim() || '未署名',
+    fullDraft,
+  });
+  if (!ok) {
+    dialogVisible.value = false;
+  }
+}
+
+async function onConfirmed() {
+  const ok = await confirm();
+  if (ok) {
+    if (resumeDraftId.value) {
+      await chainStore.discardDraft(resumeDraftId.value);
+      resumeDraftId.value = null;
+    }
+    dialogVisible.value = false;
+    form.faceNo = '';
+  }
+}
+
+/** 冲突草稿"调整后重提"：新建草稿填回弹窗；修改草稿跳详情处理 */
+function onResubmit(draft: FaceDraftRecord) {
+  if (draft.mode === 'create') {
+    resumeDraftId.value = draft.id;
+    if (draft.fullDraft) {
+      Object.assign(form, {
+        faceNo: draft.fullDraft.faceNo,
+        chainage: draft.fullDraft.chainage,
+        mileageRange: [...draft.fullDraft.mileageRange] as [number, number],
+        excavationMethod: draft.fullDraft.excavationMethod,
+        faceSize: draft.fullDraft.faceSize,
+        lithology: draft.fullDraft.lithology,
+        weathering: draft.fullDraft.weathering,
+        rockStrength: draft.fullDraft.rockStrength,
+        attitude: { ...draft.fullDraft.attitude },
+        geologist: draft.fullDraft.geologist,
+        operator: draft.updatedBy,
+      });
+    } else {
+      form.faceNo = draft.faceNo;
+      form.chainage = draft.chainage;
+      form.mileageRange = [...draft.mileageRange] as [number, number];
+      form.operator = draft.updatedBy;
+    }
+    openDialog();
+  } else if (draft.faceId) {
+    void router.push(`/faces/${draft.faceId}?draft=${draft.id}`);
+  }
+}
+
+async function discardPending(id: string) {
+  await faceStore.remove(id);
+  ElMessage.success('已删除该待整理掌子面');
 }
 
 onMounted(async () => {
+  await chainStore.load();
   await faceStore.load();
   await gradeStore.load();
   await jointStore.load();
+  // 从冲突草稿"打开掌子面"跳转过来时无需额外处理，详情页读取 query
+  void route.query;
 });
 </script>
 
@@ -105,11 +186,58 @@ onMounted(async () => {
   <div class="page">
     <div class="header">
       <h2>掌子面台账</h2>
-      <el-tag>共 {{ faceStore.items.length }} 个掌子面</el-tag>
+      <el-tag>共 {{ faceStore.activeItems.length }} 个在链掌子面</el-tag>
+      <el-tag type="info" effect="plain">里程链 v{{ currentRevision }}</el-tag>
       <el-tag type="info" effect="plain">筛选命中 {{ result.length }} 个</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="openDialog">新建编录</el-button>
     </div>
+
+    <el-card v-if="chainStore.drafts.length" shadow="never" class="conflict-card">
+      <template #header>
+        <div class="card-head">
+          <el-alert type="error" :closable="false" show-icon style="flex: 1"
+            title="提交时检测到里程冲突，以下草稿已保留未覆盖任何数据"
+            description="请按冲突提示调整区间后重提；若提示「已被他人改过」而你确认仍要按草稿里程提交，可点「仍按此里程」后再重提。" />
+        </div>
+      </template>
+      <ConflictPanel :drafts="chainStore.drafts" @resubmit="onResubmit" />
+    </el-card>
+
+    <el-card v-if="pendingItems.length" shadow="never">
+      <template #header>
+        <div class="card-head">
+          <strong>里程待整理（{{ pendingItems.length }}）</strong>
+          <span class="muted">
+            旧数据升级时检出区间互相重叠，已保留但未入链；调整里程激活或删除
+          </span>
+        </div>
+      </template>
+      <el-table :data="pendingItems" size="small" border>
+        <el-table-column prop="faceNo" label="编号" width="110" />
+        <el-table-column label="重叠区间" min-width="190">
+          <template #default="{ row }">
+            {{ formatChainage(row.mileageRange[0]) }} ~ {{ formatChainage(row.mileageRange[1]) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="lithology" label="岩性" width="90" />
+        <el-table-column prop="geologist" label="提交人" width="120" />
+        <el-table-column label="原始版本" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain">v{{ row.version?.chainRevision ?? '?' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="220">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" @click="router.push(`/faces/${row.id}?activate=1`)">
+              调整里程并激活
+            </el-button>
+            <el-button size="small" @click="router.push(`/faces/${row.id}`)">查看</el-button>
+            <el-button size="small" danger @click="discardPending(row.id)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
 
     <el-card shadow="never">
       <el-form :inline="true" @submit.prevent>
@@ -184,6 +312,10 @@ onMounted(async () => {
         <el-form-item label="掌子面编号" required>
           <el-input v-model="form.faceNo" placeholder="如 ZK-104" />
         </el-form-item>
+        <el-form-item label="里程提交人">
+          <el-input v-model="form.operator" style="width: 200px" placeholder="地质员 / 测量员姓名" />
+          <span class="hint">用于冲突时标识谁改了里程链</span>
+        </el-form-item>
         <el-form-item label="里程桩号 m">
           <el-input-number v-model="form.chainage" :min="0" :max="999999" :step="1" />
           <span class="hint">{{ formatChainage(form.chainage) }}</span>
@@ -229,9 +361,24 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">保存编录</el-button>
+        <el-button type="primary" @click="submit">检查里程并保存</el-button>
       </template>
     </el-dialog>
+
+    <CommitConfirmDialog
+      v-if="plan"
+      :plan="plan"
+      :faces="faceStore.items"
+      :joints="jointStore.items"
+      :waters="gradeStore.waters"
+      mode="create"
+      @confirm="onConfirmed"
+      @cancel="cancelConfirm"
+    />
+
+    <div v-if="submitting" class="submitting-mask">
+      <el-icon class="is-loading"><Loading /></el-icon> 正在提交里程链…
+    </div>
   </div>
 </template>
 
@@ -252,6 +399,15 @@ onMounted(async () => {
 }
 .spacer {
   flex: 1;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.conflict-card :deep(.el-alert) {
+  padding: 6px 10px;
 }
 .grid {
   display: grid;
@@ -288,9 +444,24 @@ onMounted(async () => {
   color: #5b6470;
   font-size: 13px;
 }
+.muted {
+  color: #7b8592;
+  font-size: 12px;
+}
 .hint {
   margin-left: 8px;
   color: #97a0ad;
   font-size: 12px;
+}
+.submitting-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  z-index: 3000;
+  color: #2f3a46;
 }
 </style>

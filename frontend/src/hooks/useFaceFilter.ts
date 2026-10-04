@@ -48,6 +48,8 @@ export function useFaceFilter(initial?: Partial<FaceFilters>) {
     const kw = f.keyword.trim().toUpperCase();
     const rows = faceStore.items
       .filter((face) => {
+        // 待整理（区间重叠）掌子面在台账顶部单独分区，不进入常规筛选结果
+        if (face.status === 'pending') return false;
         if (face.chainage < f.chainageFrom || face.chainage > f.chainageTo) return false;
         if (f.lithology !== 'all' && face.lithology !== f.lithology) return false;
         if (f.method !== 'all' && face.excavationMethod !== f.method) return false;

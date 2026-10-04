@@ -1,3 +1,5 @@
+import type { FaceStatus, RangeVersion } from './chain';
+
 /** 开挖方法 */
 export type ExcavationMethod = '全断面' | '台阶法' | 'CD 法';
 
@@ -39,6 +41,12 @@ export interface TunnelFace {
   attitude: Attitude;
   recordedAt: number;
   geologist: string;
+  /** 入链状态：active 正式 / pending 里程待整理（区间重叠旧数据升级而来） */
+  status: FaceStatus;
+  /** 版本戳 */
+  version: RangeVersion;
+  /** 最后一次修改里程的提交人 */
+  updatedBy?: string;
 }
 
-export type TunnelFaceDraft = Omit<TunnelFace, 'id' | 'recordedAt'>;
+export type TunnelFaceDraft = Omit<TunnelFace, 'id' | 'recordedAt' | 'status' | 'version' | 'updatedBy'>;

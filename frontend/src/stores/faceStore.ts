@@ -12,8 +12,12 @@ export const useFaceStore = defineStore('face', {
   state: (): FaceState => ({ items: [], loaded: false }),
   getters: {
     byId: (state) => (id: string) => state.items.find((it) => it.id === id),
+    activeItems: (state) => state.items.filter((it) => it.status !== 'pending'),
+    pendingItems: (state) => state.items.filter((it) => it.status === 'pending'),
     latest: (state) =>
-      [...state.items].sort((a, b) => b.chainage - a.chainage)[0],
+      [...state.items]
+        .filter((it) => it.status !== 'pending')
+        .sort((a, b) => b.chainage - a.chainage)[0],
   },
   actions: {
     async load() {
@@ -22,8 +26,15 @@ export const useFaceStore = defineStore('face', {
       this.items = rows;
       this.loaded = true;
     },
+    /** 不经里程链的直接写入（仅用于测试/兜底）；正常新建请走 chainStore.evaluate */
     async add(draft: TunnelFaceDraft) {
-      const record: TunnelFace = { ...toPlain(draft), id: newId('face'), recordedAt: Date.now() };
+      const record: TunnelFace = {
+        ...toPlain(draft),
+        id: newId('face'),
+        recordedAt: Date.now(),
+        status: 'active',
+        version: { chainRevision: 1, recordVersion: 1, basisRange: [...draft.mileageRange] as [number, number] },
+      };
       await db.faces.put(toPlain(record));
       this.items = [...this.items, record].sort((a, b) => b.chainage - a.chainage);
       return record;
@@ -37,15 +48,22 @@ export const useFaceStore = defineStore('face', {
       await db.faces.delete(id);
       this.items = this.items.filter((it) => it.id !== id);
     },
-    /** 复制上一循环（里程更小的最近一个掌子面）的信息作为草稿 */
+    /** 复制上一循环（里程更小的最近一个正式掌子面）的信息作为草稿 */
     previousDraft(id: string): TunnelFaceDraft | undefined {
       const current = this.items.find((it) => it.id === id);
       if (!current) return undefined;
       const prev = [...this.items]
-        .filter((it) => it.chainage < current.chainage)
+        .filter((it) => it.status !== 'pending' && it.chainage < current.chainage)
         .sort((a, b) => b.chainage - a.chainage)[0];
       if (!prev) return undefined;
-      const { id: _omit, recordedAt: _omit2, ...draft } = prev;
+      const {
+        id: _omit,
+        recordedAt: _omit2,
+        status: _omit3,
+        version: _omit4,
+        updatedBy: _omit5,
+        ...draft
+      } = prev;
       return toPlain(draft);
     },
   },

@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia';
 import { db, toPlain } from '../utils/db';
 import { newId } from '../utils/id';
+import { stamp } from '../utils/chain';
+import { useChainStore } from './chainStore';
+import { useFaceStore } from './faceStore';
 import type { JointSet, JointSetDraft } from '../types/joint';
 
 interface JointState {
@@ -22,7 +25,15 @@ export const useJointStore = defineStore('joint', {
       this.loaded = true;
     },
     async add(draft: JointSetDraft) {
-      const record: JointSet = { ...toPlain(draft), id: newId('joint') };
+      const chainStore = useChainStore();
+      const faceStore = useFaceStore();
+      const face = faceStore.byId(draft.faceId);
+      const revision = chainStore.revision || 1;
+      const record: JointSet = {
+        ...toPlain(draft),
+        id: newId('joint'),
+        version: stamp(1, face?.mileageRange ?? [draft.chainage, draft.chainage], revision),
+      };
       await db.joints.put(toPlain(record));
       this.items = [...this.items, record];
       return record;

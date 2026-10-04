@@ -5,16 +5,19 @@ import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useChainStore } from '../stores/chainStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import GradeTag from '../components/common/GradeTag.vue';
 import { GROUNDWATERS, GRADE_SUPPORT, ROCK_GRADES, type Groundwater, type RockGrade } from '../types/grade';
 import { attitudeText, estimateJv, formatChainage } from '../utils/geoMath';
+import { isVersionStale } from '../utils/chain';
 
 const route = useRoute();
 const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const chainStore = useChainStore();
 
 const faceId = computed(() => String(route.params.faceId ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
@@ -66,10 +69,15 @@ async function save() {
     supportSuggestion: finalSupport.value,
     manualAdjusted: manual.value,
   });
-  ElMessage.success(`已保存 ${finalGrade.value} 级围岩判定`);
+  ElMessage.success(
+    manual.value
+      ? `已保存人工确认的 ${finalGrade.value} 级结论（依据链 v${chainStore.revision}），里程重算不会覆盖`
+      : `已保存 ${finalGrade.value} 级围岩判定（依据链 v${chainStore.revision}）`,
+  );
 }
 
 onMounted(async () => {
+  await chainStore.load();
   await faceStore.load();
   await jointStore.load();
   await gradeStore.load();
@@ -88,6 +96,7 @@ onMounted(async () => {
       <h2>围岩级别判定 · {{ face?.faceNo ?? '未知' }}</h2>
       <GradeTag :grade="finalGrade" />
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组 · 自动 Jv {{ estimateJv(joints) }}</el-tag>
+      <el-tag type="info" effect="plain">里程链 v{{ chainStore.revision }}</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
@@ -145,6 +154,19 @@ onMounted(async () => {
           </el-radio-group>
           <el-divider />
           <p class="muted">{{ compareText }}</p>
+          <el-alert
+            v-if="manual"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 10px"
+            title="启用人工修正后，结论将按当前里程链版本冻结；之后里程重算会保留该结论，并在记录中显示所依据的版本"
+          />
+          <p class="muted">
+            本次判定依据：里程链 v{{ chainStore.revision }} ·
+            区间 {{ face ? formatChainage(face.mileageRange[0]) : '—' }} ~
+            {{ face ? formatChainage(face.mileageRange[1]) : '—' }}
+          </p>
           <el-button type="primary" @click="save">保存判定结果</el-button>
         </el-card>
 
@@ -171,6 +193,24 @@ onMounted(async () => {
             <el-table-column prop="groundwater" label="出水" width="120" />
             <el-table-column label="修正" width="80">
               <template #default="{ row }">{{ row.manualAdjusted ? '人工' : '自动' }}</template>
+            </el-table-column>
+            <el-table-column label="依据版本" min-width="150">
+              <template #default="{ row }">
+                <el-tag
+                  size="small"
+                  :type="isVersionStale(row.version, chainStore.revision) ? 'danger' : 'success'"
+                  effect="plain"
+                >
+                  v{{ row.version?.chainRevision ?? '?' }} · r{{ row.version?.recordVersion ?? '?' }}
+                </el-tag>
+                <el-tooltip
+                  v-if="row.manualAdjusted"
+                  content="人工确认结论：里程链重算后保留，不被自动覆盖"
+                  placement="top"
+                >
+                  <el-tag size="small" type="warning" effect="plain" style="margin-left: 4px">保留</el-tag>
+                </el-tooltip>
+              </template>
             </el-table-column>
           </el-table>
           <el-empty v-if="history.length === 0" description="尚无历史判定" :image-size="60" />
